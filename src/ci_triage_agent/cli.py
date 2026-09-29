@@ -3,6 +3,7 @@
 import click
 from rich.console import Console
 
+from ci_triage_agent.parser import ingest_directory
 from ci_triage_agent.simulator import CIPipelineSimulator
 
 console = Console()
@@ -40,7 +41,30 @@ def simulate(output_dir: str, count: int, seed: int | None) -> None:
     paths = simulator.generate(count=count)
     console.print(f"[green]Generated {len(paths)} CI log(s) in '[bold]{output_dir}[/bold]':[/green]")
     for p in paths:
-        console.print(f"  • {p}")
+        console.print(f"  \u2022 {p}")
+
+
+@main.command("ingest")
+@click.option(
+    "--log-dir",
+    default="ci_logs",
+    show_default=True,
+    help="Directory containing CI log files to ingest.",
+)
+def ingest(log_dir: str) -> None:
+    """Ingest and parse CI log files, printing structured failure summaries."""
+    failures = ingest_directory(log_dir)
+    if not failures:
+        console.print("[yellow]No CI log files found.[/yellow]")
+        return
+    console.print(f"[green]Parsed {len(failures)} failure(s):[/green]")
+    for f in failures:
+        console.print(
+            f"  [bold]{f.failure_type.value}[/bold] "
+            f"| run=[cyan]{f.run_id}[/cyan] "
+            f"| file=[magenta]{f.error_file}:{f.error_line}[/magenta] "
+            f"| {f.error_message}"
+        )
 
 
 if __name__ == "__main__":
