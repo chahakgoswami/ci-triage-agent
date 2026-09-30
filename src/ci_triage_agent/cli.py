@@ -4,6 +4,7 @@ import click
 from rich.console import Console
 
 from ci_triage_agent.parser import ingest_directory
+from ci_triage_agent.reproducer import reproduce_failure
 from ci_triage_agent.simulator import CIPipelineSimulator
 
 console = Console()
@@ -65,6 +66,41 @@ def ingest(log_dir: str) -> None:
             f"| file=[magenta]{f.error_file}:{f.error_line}[/magenta] "
             f"| {f.error_message}"
         )
+
+
+@main.command("reproduce")
+@click.option(
+    "--log-dir",
+    default="ci_logs",
+    show_default=True,
+    help="Directory containing CI log files to ingest and reproduce.",
+)
+@click.option(
+    "--timeout",
+    default=30,
+    show_default=True,
+    type=int,
+    help="Subprocess timeout in seconds.",
+)
+def reproduce(log_dir: str, timeout: int) -> None:
+    """Ingest CI log files and attempt to reproduce each failure locally."""
+    failures = ingest_directory(log_dir)
+    if not failures:
+        console.print("[yellow]No CI log files found.[/yellow]")
+        return
+    console.print(f"[green]Reproducing {len(failures)} failure(s):[/green]")
+    for f in failures:
+        console.print(
+            f"\n  [bold]{f.failure_type.value}[/bold] "
+            f"| run=[cyan]{f.run_id}[/cyan] "
+            f"| file=[magenta]{f.error_file}:{f.error_line}[/magenta]"
+        )
+        result = reproduce_failure(f, timeout=timeout)
+        status = "[green]CONFIRMED[/green]" if result.confirmed else "[red]NOT CONFIRMED[/red]"
+        console.print(f"    Reproduction: {status}")
+        console.print(f"    Reason      : {result.confirmation_reason}")
+        if result.reproduction_error:
+            console.print(f"    [red]Error: {result.reproduction_error}[/red]")
 
 
 if __name__ == "__main__":
