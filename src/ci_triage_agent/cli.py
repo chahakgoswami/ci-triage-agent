@@ -3,6 +3,7 @@
 import click
 from rich.console import Console
 
+from ci_triage_agent.agent import FixSuggestionAgent
 from ci_triage_agent.parser import ingest_directory
 from ci_triage_agent.reproducer import reproduce_failure
 from ci_triage_agent.simulator import CIPipelineSimulator
@@ -101,6 +102,61 @@ def reproduce(log_dir: str, timeout: int) -> None:
         console.print(f"    Reason      : {result.confirmation_reason}")
         if result.reproduction_error:
             console.print(f"    [red]Error: {result.reproduction_error}[/red]")
+
+
+@main.command("suggest")
+@click.option(
+    "--log-dir",
+    default="ci_logs",
+    show_default=True,
+    help="Directory containing CI log files to ingest and fix.",
+)
+@click.option(
+    "--timeout",
+    default=30,
+    show_default=True,
+    type=int,
+    help="Subprocess timeout in seconds.",
+)
+@click.option(
+    "--model",
+    default="gpt-4o",
+    show_default=True,
+    help="OpenAI model to use (ignored when OPENAI_API_KEY is absent).",
+)
+def suggest(log_dir: str, timeout: int, model: str) -> None:
+    """Ingest CI logs, reproduce failures, and suggest fixes via the LLM agent."""
+    failures = ingest_directory(log_dir)
+    if not failures:
+        console.print("[yellow]No CI log files found.[/yellow]")
+        return
+
+    agent = FixSuggestionAgent(model=model)
+    mode = "[yellow]mock[/yellow]" if agent.used_mock else f"[green]{agent.model_name}[/green]"
+    console.print(f"[green]LLM agent mode:[/green] {mode}")
+    console.print(f"[green]Processing {len(failures)} failure(s)...[/green]")
+
+    for f in failures:
+        console.print(
+            f"\n  [bold]{f.failure_type.value}[/bold] "
+            f"| run=[cyan]{f.run_id}[/cyan] "
+            f"| file=[magenta]{f.error_file}:{f.error_line}[/magenta]"
+        )
+        repro = reproduce_failure(f, timeout=timeout)
+        repro_status = "[green]CONFIRMED[/green]" if repro.confirmed else "[red]NOT CONFIRMED[/red]"
+        console.print(f"    Reproduction : {repro_status}")
+
+        suggestion = agent.suggest_fix(f, repro)
+        if suggestion.agent_error:
+            console.print(f"    [red]Agent error: {suggestion.agent_error}[/red]")
+            continue
+
+        console.print(f"    Explanation  : {suggestion.explanation[:200]}")
+        if suggestion.has_patch:
+            console.print("    [green]Patch proposed:[/green]")
+            console.print(suggestion.patch)
+        else:
+            console.print("    [yellow]No patch proposed.[/yellow]")
 
 
 if __name__ == "__main__":
