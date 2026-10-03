@@ -1,10 +1,19 @@
 """CLI entry point for the CI Triage Agent."""
 
+import json
+from pathlib import Path
+
 import click
 from rich.console import Console
 
 from ci_triage_agent.agent import FixSuggestionAgent
-from ci_triage_agent.parser import ingest_directory
+from ci_triage_agent.approval import (
+    AUDIT_LOG_FILENAME,
+    load_audit_trail,
+    run_approval_workflow,
+)
+from ci_triage_agent.git_pr import MockPullRequest, TestRunResult
+from ci_triage_agent.parser import FailureType, ParsedFailure, ingest_directory
 from ci_triage_agent.reproducer import reproduce_failure
 from ci_triage_agent.simulator import CIPipelineSimulator
 
@@ -157,6 +166,103 @@ def suggest(log_dir: str, timeout: int, model: str) -> None:
             console.print(suggestion.patch)
         else:
             console.print("    [yellow]No patch proposed.[/yellow]")
+
+
+@main.command("approve")
+@click.argument(
+    "pr_artifact",
+    type=click.Path(exists=True, dir_okay=False, readable=True),
+    metavar="PR_ARTIFACT_JSON",
+)
+@click.option(
+    "--output-dir",
+    default="approved_patches",
+    show_default=True,
+    help="Directory where approved patch files are written.",
+)
+@click.option(
+    "--audit-log",
+    default=AUDIT_LOG_FILENAME,
+    show_default=True,
+    help="Path to the JSON-Lines audit trail file.",
+)
+def approve_cmd(
+    pr_artifact: str,
+    output_dir: str,
+    audit_log: str,
+) -> None:
+    """Review and approve/reject a PR artifact JSON file.
+
+    PR_ARTIFACT_JSON is the path to a JSON file produced by the git-pr layer.
+    """
+    artifact_path = Path(pr_artifact)
+    data = json.loads(artifact_path.read_text(encoding="utf-8"))
+
+    # Reconstruct a MockPullRequest from the JSON artifact.
+    # We build lightweight stubs from the serialised data so that
+    # the approval workflow can present all relevant details.
+    failure = ParsedFailure(
+        run_id=data["parsed_failure"]["run_id"],
+        source_file=data["parsed_failure"].get("source_file", ""),
+        failure_type=FailureType(data["parsed_failure"]["failure_type"]),
+        error_file=data["parsed_failure"]["error_file"],
+        error_line=data["parsed_failure"]["error_line"],
+        error_message=data["parsed_failure"]["error_message"],
+        test_name=data["parsed_failure"].get("test_name"),
+    )
+
+    from ci_triage_agent.agent import FixSuggestion
+    fs_data = data.get("fix_suggestion", {})
+    suggestion = FixSuggestion(
+        parsed_failure=failure,
+        used_mock=fs_data.get("used_mock", True),
+        explanation=fs_data.get("explanation", ""),
+        patch=fs_data.get("patch", ""),
+        target_file=fs_data.get("target_file", ""),
+        model=fs_data.get("model", "mock"),
+    )
+
+    tr_data = data.get("test_result", {})
+    test_result = TestRunResult(
+        passed=tr_data.get("passed", False),
+        returncode=tr_data.get("returncode", -1),
+        stdout=tr_data.get("stdout", ""),
+        stderr=tr_data.get("stderr", ""),
+        tests_passed=tr_data.get("tests_passed", 0),
+        tests_failed=tr_data.get("tests_failed", 0),
+        tests_collected=tr_data.get("tests_collected", 0),
+    )
+
+    pr = MockPullRequest(
+        pr_id=data["pr_id"],
+        title=data["title"],
+        branch_name=data["branch_name"],
+        diff=data["diff"],
+        changed_files=data.get("changed_files", []),
+        test_result=test_result,
+        parsed_failure=failure,
+        fix_suggestion=suggestion,
+        patch_applied=data.get("patch_applied", False),
+        error=data.get("error"),
+        labels=data.get("labels", []),
+        created_at=data.get("created_at", ""),
+        artifact_path=str(artifact_path),
+    )
+
+    decision = run_approval_workflow(
+        pr,
+        output_dir=output_dir,
+        audit_log=audit_log,
+        console=console,
+    )
+
+    if decision.decision == "approve":
+        console.print(
+            f"[bold green]Approved.[/bold green] "
+            f"Patch written to: {decision.patch_written_to}"
+        )
+    else:
+        console.print(f"[bold red]Rejected.[/bold red] Note: {decision.note or '(none)'}")
 
 
 if __name__ == "__main__":
