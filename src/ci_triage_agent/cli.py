@@ -265,5 +265,47 @@ def approve_cmd(
         console.print(f"[bold red]Rejected.[/bold red] Note: {decision.note or '(none)'}")
 
 
+@main.command("run")
+@click.option("--log-dir", default="ci_logs", show_default=True,
+              help="Directory containing CI log files to triage.")
+@click.option("--pr-output-dir", default="pr_artifacts", show_default=True)
+@click.option("--approved-dir", default="approved_patches", show_default=True)
+@click.option("--audit-log", default=AUDIT_LOG_FILENAME, show_default=True)
+@click.option("--model", default="gpt-4o", show_default=True)
+@click.option("--force-mock", is_flag=True, help="Always use the stub LLM client.")
+@click.option("--auto-approve", is_flag=True,
+              help="Approve every proposed PR without prompting (non-interactive).")
+@click.option("--simulate", default=0, type=int, metavar="N",
+              help="First generate N mock failing logs into --log-dir.")
+@click.option("--seed", default=None, type=int, help="Seed for --simulate.")
+def run_cmd(
+    log_dir: str,
+    pr_output_dir: str,
+    approved_dir: str,
+    audit_log: str,
+    model: str,
+    force_mock: bool,
+    auto_approve: bool,
+    simulate: int,
+    seed: int | None,
+) -> None:
+    """Run the full end-to-end triage pipeline (ingest → reproduce → fix → PR → approve)."""
+    from ci_triage_agent.orchestrator import OrchestratorConfig, run_pipeline
+
+    if simulate:
+        CIPipelineSimulator(output_dir=log_dir, seed=seed).generate(count=simulate)
+
+    config = OrchestratorConfig(
+        log_dir=log_dir,
+        pr_output_dir=pr_output_dir,
+        approved_dir=approved_dir,
+        audit_log=audit_log,
+        model=model,
+        force_mock=force_mock,
+        auto_approve=auto_approve,
+    )
+    run_pipeline(config)
+
+
 if __name__ == "__main__":
     main()
